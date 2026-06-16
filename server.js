@@ -1,82 +1,84 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
-const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = 'your-secret-key-change-this-in-production';
-const USERS_FILE = path.join(__dirname, 'users.json');
+
+// Supabase configuration
+const SUPABASE_URL = 'https://ezsabizkfvwjqcqcnljs.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_bBV6TNB4UfwDttjP4nL8UA_iCkxRPoB';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const readUsers = () => {
-  if (!fs.existsSync(USERS_FILE)) {
-    return [];
-  }
-  const data = fs.readFileSync(USERS_FILE, 'utf8');
-  return JSON.parse(data);
-};
-
-const writeUsers = (users) => {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-};
-
-app.post('/api/register', (req, res) => {
+// Register route using Supabase Auth
+app.post('/api/register', async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password) {
     return res.status(400).json({ message: 'All fields are required' });
   }
 
-  const users = readUsers();
+  try {
+    // First, create the user in Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { username }
+      }
+    });
 
-  const existingUser = users.find(u => u.username === username || u.email === email);
-  if (existingUser) {
-    return res.status(400).json({ message: 'Username or email already exists' });
+    if (authError) {
+      return res.status(400).json({ message: authError.message });
+    }
+
+    // Now, insert user data into a users table (if you have one)
+    // Alternatively, we'll just return success
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
-
-  const hashedPassword = bcrypt.hashSync(password, 10);
-  const newUser = {
-    id: users.length + 1,
-    username,
-    email,
-    password: hashedPassword
-  };
-
-  users.push(newUser);
-  writeUsers(users);
-
-  res.status(201).json({ message: 'User registered successfully' });
 });
 
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
+// Login route using Supabase Auth
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password are required' });
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
   }
 
-  const users = readUsers();
-  const user = users.find(u => u.username === username);
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
 
-  if (!user) {
-    return res.status(401).json({ message: 'Invalid credentials' });
+    if (error) {
+      return res.status(401).json({ message: error.message });
+    }
+
+    // Create a custom JWT token for our app
+    const token = jwt.sign(
+      { userId: data.user.id, email: data.user.email },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    res.json({ message: 'Login successful', token, user: data.user });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
-
-  const passwordMatch = bcrypt.compareSync(password, user.password);
-
-  if (!passwordMatch) {
-    return res.status(401).json({ message: 'Invalid credentials' });
-  }
-
-  const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
-  res.json({ message: 'Login successful', token });
 });
 
 app.get('/', (req, res) => {
@@ -89,4 +91,5 @@ app.get('/dashboard', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  console.log('Using Supabase for authentication!');
 });
